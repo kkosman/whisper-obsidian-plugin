@@ -1,4 +1,4 @@
-import { Plugin, Notice } from "obsidian";
+import { Plugin, Notice, MarkdownView } from "obsidian";
 import { Timer } from "src/Timer";
 import { Controls } from "src/Controls";
 import { AudioHandler } from "src/AudioHandler";
@@ -110,12 +110,12 @@ export default class Whisper extends Plugin {
             name: "Scan and Transcribe Audio Files",
             callback: async () => {
                 const activeLeaf = this.app.workspace.activeLeaf;
-                if (!activeLeaf || !activeLeaf.view || !activeLeaf.view instanceof MarkdownView) {
+                if (!activeLeaf || !activeLeaf.view || !(activeLeaf.view instanceof MarkdownView)) {
                     new Notice("No active note found.");
                     return;
                 }
                 
-                const noteContent = activeLeaf.view.data;
+                const noteContent = activeLeaf.view.getViewData();
                 const audioFiles = this.extractAudioFiles(noteContent);
                 
                 if (audioFiles.length === 0) {
