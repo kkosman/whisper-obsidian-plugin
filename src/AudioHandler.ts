@@ -115,4 +115,37 @@ export class AudioHandler {
 			new Notice("Error parsing audio: " + err.message);
 		}
 	}
+
+	async transcribeAudio(blob: Blob): Promise<string | null> {
+		if (!this.plugin.settings.apiKey) {
+			new Notice("API key is missing. Please add your API key in the settings.");
+			return null;
+		}
+
+		const formData = new FormData();
+		formData.append("file", blob);
+		formData.append("model", this.plugin.settings.model);
+		formData.append("language", this.plugin.settings.language);
+		if (this.plugin.settings.prompt) {
+			formData.append("prompt", this.plugin.settings.prompt);
+		}
+
+		try {
+			const response = await axios.post(
+				this.plugin.settings.apiUrl,
+				formData,
+				{
+					headers: {
+						"Content-Type": "multipart/form-data",
+						Authorization: `Bearer ${this.plugin.settings.apiKey}`,
+					},
+				}
+			);
+			return response.data.text;
+		} catch (err) {
+			console.error("Error transcribing audio:", err);
+			new Notice("Error transcribing audio: " + err.message);
+			return null;
+		}
+	}
 }
