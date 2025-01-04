@@ -40,6 +40,20 @@ export default class Whisper extends Plugin {
         this.statusBar = new StatusBar(this);
 
         this.addCommands();
+
+        // Wait until the workspace is ready before running the scan-and-transcribe command
+        this.app.workspace.onLayoutReady(() => {
+            this.runScanAndTranscribe();
+        });
+
+        // Listen for file changes in the "Private/Dziennik 2025" folder
+        this.registerEvent(
+            this.app.vault.on("modify", (file) => {
+                if (file.path.startsWith("Private/Dziennik 2025/")) {
+                    this.runScanAndTranscribe();
+                }
+            })
+        );
     }
 
     onunload() {
@@ -125,6 +139,7 @@ export default class Whisper extends Plugin {
 
                 if (audioFiles.length === 0) {
                     new Notice("No audio files found in the current note.");
+                    this.statusBar.updateStatus(RecordingStatus.Idle);
                     return;
                 }
 
@@ -141,7 +156,7 @@ export default class Whisper extends Plugin {
                             // Analyze the transcription
                             updatedContent = updatedContent.replace(
                                 `![[${fileName}]]`,
-                                `![[${fileName}]]\n\n${transcription}\n\n${analysis}`
+                                `![[${fileName}]] #transcribed\n\n${transcription}\n\n${analysis}`
                             );
                         }
                     }
@@ -154,9 +169,57 @@ export default class Whisper extends Plugin {
         });
     }
 
+    async runScanAndTranscribe() {
+        this.statusBar.updateStatus(RecordingStatus.Processing);
+
+        const files = this.app.vault.getFiles().filter(file => {
+            return file.path.startsWith("Private/Dziennik 2025/") && file.extension === "md";
+        });
+
+        if (files.length === 0) {
+            new Notice("No files found in the directory.");
+            this.statusBar.updateStatus(RecordingStatus.Idle);
+            return;
+        }
+
+        for (const file of files) {
+            const noteContent = await this.app.vault.read(file);
+            const audioFiles = this.extractAudioFiles(noteContent);
+
+            if (audioFiles.length === 0) {
+                this.statusBar.updateStatus(RecordingStatus.Idle);
+                return;
+            }
+
+            let updatedContent = noteContent;
+
+            for (const audioFile of audioFiles) {
+                const audioBlob = await this.getAudioBlob(audioFile);
+                if (audioBlob) {
+                    const compressedAudioBlob = await this.convertAndCompressAudio(audioBlob);
+                    const transcription = await this.audioHandler.transcribeAudio(compressedAudioBlob);
+                    if (transcription) {
+                        const fileName = audioFile.split('/').pop(); // Extract the file name from the path
+                        const analysis = await this.analyzeTranscription(transcription);
+                        // Analyze the transcription
+                        updatedContent = updatedContent.replace(
+                            `![[${fileName}]]`,
+                            `![[${fileName}]] #transcribed\n\n${transcription}\n\n${analysis}`
+                        );
+                    }
+                }
+            }
+
+            await this.app.vault.modify(file, updatedContent);
+        }
+
+        new Notice("Transcription and analysis complete.");
+        this.statusBar.updateStatus(RecordingStatus.Idle);
+    }
+
     // Function to extract audio file links from the note content
     extractAudioFiles(content: string): string[] {
-        const audioFilePattern = /!\[\[(.*?\.m4a)\]\]/g;
+        const audioFilePattern = /!\[\[(.*?\.m4a)\]\](?!.*#transcribed)/g;
         const matches = content.matchAll(audioFilePattern);
         const audioFiles: string[] = [];
         for (const match of matches) {
