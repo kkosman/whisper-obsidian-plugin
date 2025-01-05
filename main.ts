@@ -1,4 +1,4 @@
-import { Plugin, Notice, MarkdownView, TFile } from "obsidian";
+import { Plugin, Notice, MarkdownView, TFile, Platform } from "obsidian";
 import { Timer } from "src/Timer";
 import { Controls } from "src/Controls";
 import { AudioHandler } from "src/AudioHandler";
@@ -10,6 +10,7 @@ import ffmpeg from "fluent-ffmpeg";
 import { readFileSync, writeFileSync } from "fs";
 import { Buffer } from "buffer";
 import axios from "axios";
+import * as fs from 'fs';
 
 export default class Whisper extends Plugin {
     settings: WhisperSettings;
@@ -19,8 +20,15 @@ export default class Whisper extends Plugin {
     audioHandler: AudioHandler;
     controls: Controls | null = null;
     statusBar: StatusBar;
+    debounceTimeout: number | null = null;
 
     async onload() {
+        // Check if the platform is mobile
+        if (Platform.isMobile) {
+            new Notice("Whisper plugin is not supported on mobile devices.");
+            return;
+        }
+
         this.settingsManager = new SettingsManager(this);
         this.settings = await this.settingsManager.loadSettings();
 
@@ -50,7 +58,7 @@ export default class Whisper extends Plugin {
         this.registerEvent(
             this.app.vault.on("modify", (file) => {
                 if (file.path.startsWith("Private/Dziennik 2025/")) {
-                    this.runScanAndTranscribe();
+                    this.debounceRunScanAndTranscribe();
                 }
             })
         );
@@ -169,6 +177,15 @@ export default class Whisper extends Plugin {
         });
     }
 
+    debounceRunScanAndTranscribe() {
+        if (this.debounceTimeout) {
+            clearTimeout(this.debounceTimeout);
+        }
+        this.debounceTimeout = window.setTimeout(() => {
+            this.runScanAndTranscribe();
+        }, 60000); // 1 minute debounce
+    }
+
     async runScanAndTranscribe() {
         this.statusBar.updateStatus(RecordingStatus.Processing);
 
@@ -244,7 +261,7 @@ export default class Whisper extends Plugin {
     // Function to convert and compress the audio file
     async convertAndCompressAudio(inputBlob: Blob): Promise<Blob> {
         return new Promise((resolve, reject) => {
-            const vaultPath = "/Users/krzysztofkosman/Obsidian/Private/Attachements";
+            const vaultPath = "/Users/krzysztofkosman/Obsidian/Private/Tmp";
             const inputFilePath = `${vaultPath}/input.m4a`;
             const outputFilePath = `${vaultPath}/output.mp3`;
 
@@ -267,6 +284,14 @@ export default class Whisper extends Plugin {
                         const outputBuffer = readFileSync(outputFilePath);
                         const outputBlob = new Blob([outputBuffer], { type: "audio/mp3" });
                         resolve(outputBlob);
+
+                        // Clean up temporary files
+                        try {
+                            fs.unlinkSync(inputFilePath);
+                            fs.unlinkSync(outputFilePath);
+                        } catch (err) {
+                            console.error("Error cleaning up temporary files:", err);
+                        }
                     })
                     .on("error", (err: Error) => {
                         console.error("Error during ffmpeg processing:", err);
