@@ -135,44 +135,7 @@ export default class Whisper extends Plugin {
             id: "scan-and-transcribe",
             name: "Scan and Transcribe Audio Files",
             callback: async () => {
-                this.statusBar.updateStatus(RecordingStatus.Processing);
-                const activeLeaf = this.app.workspace.activeLeaf;
-                if (!activeLeaf || !activeLeaf.view || !(activeLeaf.view instanceof MarkdownView)) {
-                    new Notice("No active note found.");
-                    return;
-                }
-
-                const noteContent = activeLeaf.view.getViewData();
-                const audioFiles = this.extractAudioFiles(noteContent);
-
-                if (audioFiles.length === 0) {
-                    new Notice("No audio files found in the current note.");
-                    this.statusBar.updateStatus(RecordingStatus.Idle);
-                    return;
-                }
-
-                let updatedContent = noteContent;
-
-                for (const audioFile of audioFiles) {
-                    const audioBlob = await this.getAudioBlob(audioFile);
-                    if (audioBlob) {
-                        const compressedAudioBlob = await this.convertAndCompressAudio(audioBlob);
-                        const transcription = await this.audioHandler.transcribeAudio(compressedAudioBlob);
-                        if (transcription) {
-                            const fileName = audioFile.split('/').pop(); // Extract the file name from the path
-                            const analysis = await this.analyzeTranscription(transcription);
-                            // Analyze the transcription
-                            updatedContent = updatedContent.replace(
-                                `![[${fileName}]]`,
-                                `![[${fileName}]] #transcribed\n\n${transcription}\n\n${analysis}`
-                            );
-                        }
-                    }
-                }
-
-                activeLeaf.view.setViewData(updatedContent, false);
-                new Notice("Transcription and analysis complete.");
-                this.statusBar.updateStatus(RecordingStatus.Idle);
+                await this.scanAndTranscribeActiveNote();
             },
         });
     }
@@ -183,7 +146,7 @@ export default class Whisper extends Plugin {
         }
         this.debounceTimeout = window.setTimeout(() => {
             this.runScanAndTranscribe();
-        }, 60000); // 1 minute debounce
+        }, 10000); // 10 seconds debounce
     }
 
     async runScanAndTranscribe() {
@@ -200,38 +163,70 @@ export default class Whisper extends Plugin {
         }
 
         for (const file of files) {
-            const noteContent = await this.app.vault.read(file);
-            const audioFiles = this.extractAudioFiles(noteContent);
-
-            if (audioFiles.length === 0) {
-                this.statusBar.updateStatus(RecordingStatus.Idle);
-                return;
-            }
-
-            let updatedContent = noteContent;
-
-            for (const audioFile of audioFiles) {
-                const audioBlob = await this.getAudioBlob(audioFile);
-                if (audioBlob) {
-                    const compressedAudioBlob = await this.convertAndCompressAudio(audioBlob);
-                    const transcription = await this.audioHandler.transcribeAudio(compressedAudioBlob);
-                    if (transcription) {
-                        const fileName = audioFile.split('/').pop(); // Extract the file name from the path
-                        const analysis = await this.analyzeTranscription(transcription);
-                        // Analyze the transcription
-                        updatedContent = updatedContent.replace(
-                            `![[${fileName}]]`,
-                            `![[${fileName}]] #transcribed\n\n${transcription}\n\n${analysis}`
-                        );
-                    }
-                }
-            }
-
-            await this.app.vault.modify(file, updatedContent);
+            await this.processFile(file);
         }
 
         new Notice("Transcription and analysis complete.");
         this.statusBar.updateStatus(RecordingStatus.Idle);
+    }
+
+    async scanAndTranscribeActiveNote() {
+        this.statusBar.updateStatus(RecordingStatus.Processing);
+        const activeLeaf = this.app.workspace.activeLeaf;
+        if (!activeLeaf || !activeLeaf.view || !(activeLeaf.view instanceof MarkdownView)) {
+            new Notice("No active note found.");
+            this.statusBar.updateStatus(RecordingStatus.Idle);
+            return;
+        }
+
+        const noteContent = activeLeaf.view.getViewData();
+        const audioFiles = this.extractAudioFiles(noteContent);
+
+        if (audioFiles.length === 0) {
+            new Notice("No audio files found in the current note.");
+            this.statusBar.updateStatus(RecordingStatus.Idle);
+            return;
+        }
+
+        let updatedContent = await this.processAudioFiles(noteContent, audioFiles);
+        activeLeaf.view.setViewData(updatedContent, false);
+        new Notice("Transcription and analysis complete.");
+        this.statusBar.updateStatus(RecordingStatus.Idle);
+    }
+
+    async processFile(file: TFile) {
+        const noteContent = await this.app.vault.read(file);
+        const audioFiles = this.extractAudioFiles(noteContent);
+
+        if (audioFiles.length === 0) {
+            return;
+        }
+
+        let updatedContent = await this.processAudioFiles(noteContent, audioFiles);
+        await this.app.vault.modify(file, updatedContent);
+    }
+
+    async processAudioFiles(noteContent: string, audioFiles: string[]): Promise<string> {
+        let updatedContent = noteContent;
+
+        for (const audioFile of audioFiles) {
+            const audioBlob = await this.getAudioBlob(audioFile);
+            if (audioBlob) {
+                const compressedAudioBlob = await this.convertAndCompressAudio(audioBlob);
+                const transcription = await this.audioHandler.transcribeAudio(compressedAudioBlob);
+                if (transcription) {
+                    const fileName = audioFile.split('/').pop(); // Extract the file name from the path
+                    const analysis = await this.analyzeTranscription(transcription);
+                    // Analyze the transcription
+                    updatedContent = updatedContent.replace(
+                        `![[${fileName}]]`,
+                        `![[${fileName}]] #transcribed\n\n${transcription}\n\n${analysis}`
+                    );
+                }
+            }
+        }
+
+        return updatedContent;
     }
 
     // Function to extract audio file links from the note content
@@ -313,10 +308,9 @@ export default class Whisper extends Plugin {
         const messages = [
             {
                 role: "system",
-                content: `You are a helpful assistant that can analyze my note transcription. 
-                I will provide you with my transcription, please perform the following tasks:
-                1. Briefly summarize the transcription.
-                2. List all the tasks for me to do. If there are no tasks, skip this step.
+                content: `You are a helpful assistant called Stefan that can analyze my note transcription. 
+                I will provide you with my transcription, please list all the tasks for me to do. 
+                If there are no tasks to do, return an empty string.
                 Answer in Polish`,
             },
             {
