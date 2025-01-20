@@ -245,7 +245,11 @@ export default class Whisper extends Plugin {
     // Function to get the audio blob from the file path
     async getAudioBlob(filePath: string): Promise<Blob | null> {
         try {
-            const arrayBuffer = await this.app.vault.adapter.readBinary("/Attachements/" + filePath);
+            if (!this.validateFilePath(filePath)) {
+                console.log(filePath);
+                throw new Error("Invalid file path detected.");
+            }
+            const arrayBuffer = await this.app.vault.adapter.readBinary(`/Attachements/${filePath}`);
             return new Blob([arrayBuffer]);
         } catch (error) {
             console.error("Error reading audio file:", error);
@@ -253,7 +257,11 @@ export default class Whisper extends Plugin {
         }
     }
 
-    // Function to convert and compress the audio file
+    validateFilePath(filePath: string): boolean {
+        const allowedPath = new RegExp("^[a-zA-Z0-9_ /\\.-]+$", "i");
+        return allowedPath.test(filePath);
+    }
+
     async convertAndCompressAudio(inputBlob: Blob): Promise<Blob> {
         return new Promise((resolve, reject) => {
             const vaultPath = "/Users/krzysztofkosman/Obsidian/Private/Tmp";
@@ -281,13 +289,12 @@ export default class Whisper extends Plugin {
                         resolve(outputBlob);
 
                         // Clean up temporary files
-                        // temporary commented out to debug if this prevents attachments deletion
-                        // try {
-                        //     fs.unlinkSync(inputFilePath);
-                        //     fs.unlinkSync(outputFilePath);
-                        // } catch (err) {
-                        //     console.error("Error cleaning up temporary files:", err);
-                        // }
+                        try {
+                            fs.unlinkSync(inputFilePath);
+                            fs.unlinkSync(outputFilePath);
+                        } catch (err) {
+                            console.error("Error cleaning up temporary files:", err);
+                        }
                     })
                     .on("error", (err: Error) => {
                         console.error("Error during ffmpeg processing:", err);
@@ -299,7 +306,7 @@ export default class Whisper extends Plugin {
         });
     }
 
-    // Function to analyze the transcription using OpenAI GPT-4.0-mini model
+    // Function to analyze the transcription using OpenAI GPT model
     async analyzeTranscription(transcription: string): Promise<string | null> {
         if (!this.settings.apiKey) {
             new Notice("API key is missing. Please add your API key in the settings.");
