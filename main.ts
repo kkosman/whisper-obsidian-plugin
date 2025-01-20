@@ -281,12 +281,13 @@ export default class Whisper extends Plugin {
                         resolve(outputBlob);
 
                         // Clean up temporary files
-                        try {
-                            fs.unlinkSync(inputFilePath);
-                            fs.unlinkSync(outputFilePath);
-                        } catch (err) {
-                            console.error("Error cleaning up temporary files:", err);
-                        }
+                        // temporary commented out to debug if this prevents attachments deletion
+                        // try {
+                        //     fs.unlinkSync(inputFilePath);
+                        //     fs.unlinkSync(outputFilePath);
+                        // } catch (err) {
+                        //     console.error("Error cleaning up temporary files:", err);
+                        // }
                     })
                     .on("error", (err: Error) => {
                         console.error("Error during ffmpeg processing:", err);
