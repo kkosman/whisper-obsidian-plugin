@@ -50,7 +50,7 @@ export class AudioHandler {
 				const arrayBuffer = await blob.arrayBuffer();
 				await this.plugin.app.vault.adapter.writeBinary(
 					audioFilePath,
-					new Uint8Array(arrayBuffer)
+					arrayBuffer
 				);
 				new Notice("Audio saved successfully.");
 			}
@@ -142,6 +142,31 @@ export class AudioHandler {
 				}
 			);
 			return response.data.text;
+		} catch (err) {
+			console.error("Error transcribing audio:", err);
+			new Notice("Error transcribing audio: " + err.message);
+			return null;
+		}
+	}
+
+	// Remote transcription via external webhook
+	async transcribeAudioRemote(blob: Blob, fileName: string): Promise<string | null> {
+		try {
+			const formData = new FormData();
+			formData.append("data", blob, fileName);
+
+			const response = await axios.post(
+				"https://n8n.1000i.pl/webhook/dd4f6212-4d98-4fb7-ab1b-7abd5659deb7",
+				formData,
+				{
+					headers: {
+						Authorization: this.plugin.settings.authHeader,
+						"Content-Type": "multipart/form-data",
+					},
+				}
+			);
+
+			return response.data;
 		} catch (err) {
 			console.error("Error transcribing audio:", err);
 			new Notice("Error transcribing audio: " + err.message);

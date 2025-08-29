@@ -6,11 +6,8 @@ import { WhisperSettingsTab } from "src/WhisperSettingsTab";
 import { SettingsManager, WhisperSettings } from "src/SettingsManager";
 import { NativeAudioRecorder } from "src/AudioRecorder";
 import { RecordingStatus, StatusBar } from "src/StatusBar";
-import ffmpeg from "fluent-ffmpeg";
-import { readFileSync, writeFileSync } from "fs";
-import { Buffer } from "buffer";
+
 import axios from "axios";
-import * as fs from 'fs';
 
 export default class Whisper extends Plugin {
     settings: WhisperSettings;
@@ -23,12 +20,6 @@ export default class Whisper extends Plugin {
     debounceTimeout: number | null = null;
 
     async onload() {
-        // Check if the platform is mobile
-        if (Platform.isMobile) {
-            new Notice("Whisper plugin is not supported on mobile devices.");
-            return;
-        }
-
         this.settingsManager = new SettingsManager(this);
         this.settings = await this.settingsManager.loadSettings();
 
@@ -181,6 +172,7 @@ export default class Whisper extends Plugin {
 
         const noteContent = activeLeaf.view.getViewData();
         const audioFiles = this.extractAudioFiles(noteContent);
+        const sourcePath = activeLeaf.view.file?.path ?? "";
 
         if (audioFiles.length === 0) {
             new Notice("No audio files found in the current note.");
@@ -188,7 +180,7 @@ export default class Whisper extends Plugin {
             return;
         }
 
-        let updatedContent = await this.processAudioFiles(noteContent, audioFiles);
+        let updatedContent = await this.processAudioFiles(noteContent, audioFiles, sourcePath);
         activeLeaf.view.setViewData(updatedContent, false);
         new Notice("Transcription and analysis complete.");
         this.statusBar.updateStatus(RecordingStatus.Idle);
@@ -202,26 +194,40 @@ export default class Whisper extends Plugin {
             return;
         }
 
-        let updatedContent = await this.processAudioFiles(noteContent, audioFiles);
+        let updatedContent = await this.processAudioFiles(noteContent, audioFiles, file.path);
         await this.app.vault.modify(file, updatedContent);
     }
 
-    async processAudioFiles(noteContent: string, audioFiles: string[]): Promise<string> {
+    async processAudioFiles(noteContent: string, audioFiles: string[], sourcePath: string): Promise<string> {
         let updatedContent = noteContent;
 
         for (const audioFile of audioFiles) {
-            const audioBlob = await this.getAudioBlob(audioFile);
+            const resolvedPath = this.resolveAudioPath(audioFile, sourcePath);
+            if (!resolvedPath) {
+                console.error(`Could not resolve audio path for ${audioFile} (source: ${sourcePath})`);
+                continue;
+            }
+            const audioBlob = await this.getAudioBlobFromPath(resolvedPath);
             if (audioBlob) {
-                const compressedAudioBlob = await this.convertAndCompressAudio(audioBlob);
-                const transcription = await this.audioHandler.transcribeAudio(compressedAudioBlob);
+                const resolvedFileName = resolvedPath.split('/').pop() ?? 'audio.m4a';
+                const linkFileName = audioFile.split('/').pop();
+                const transcription = await this.audioHandler.transcribeAudioRemote(audioBlob, resolvedFileName);
                 if (transcription) {
-                    const fileName = audioFile.split('/').pop(); // Extract the file name from the path
+                    const fileDate = await this.getFileCreationDateFromPath(resolvedPath);
+                    const targetWithPath = `![[${audioFile}]]`;
+                    const targetWithName = `![[${linkFileName}]]`;
+                    const replacementWithPath = `${targetWithPath} #transcribed\n\n**Date:** ${fileDate}\n\n${transcription}`;
+                    const replacementWithName = `${targetWithName} #transcribed\n\n**Date:** ${fileDate}\n\n${transcription}`;
+
+                    if (updatedContent.includes(targetWithPath)) {
+                        updatedContent = updatedContent.replace(targetWithPath, replacementWithPath);
+                    } else if (updatedContent.includes(targetWithName)) {
+                        updatedContent = updatedContent.replace(targetWithName, replacementWithName);
+                    }
                     const analysis = await this.analyzeTranscription(transcription);
-                    // Analyze the transcription
-                    updatedContent = updatedContent.replace(
-                        `![[${fileName}]]`,
-                        `![[${fileName}]] #transcribed\n\n${transcription}\n\n${analysis}`
-                    );
+                    if (analysis) {
+                        updatedContent += `\n\n**Tasks:**\n${analysis}`;
+                    }
                 }
             }
         }
@@ -231,80 +237,95 @@ export default class Whisper extends Plugin {
 
     // Function to extract audio file links from the note content
     extractAudioFiles(content: string): string[] {
-        const audioFilePattern = /!\[\[(.*?\.m4a)\]\](?!.*#transcribed)/g;
-        const matches = content.matchAll(audioFilePattern);
         const audioFiles: string[] = [];
-        for (const match of matches) {
-            if (match[1]) {
-                audioFiles.push(match[1]); // Return the file name only
+        const lines = content.split('\n');
+        for (const line of lines) {
+            const match = line.match(/!\[\[([^\]]+)\]\]/);
+            if (match && !line.includes('#transcribed')) {
+                let target = match[1];
+                // Strip alias and header fragments
+                if (target.includes('|')) target = target.split('|')[0];
+                if (target.includes('#')) target = target.split('#')[0];
+                target = target.trim();
+                if (/\.m4a$/i.test(target)) {
+                    audioFiles.push(target);
+                }
             }
         }
         return audioFiles;
     }
 
-    // Function to get the audio blob from the file path
-    async getAudioBlob(filePath: string): Promise<Blob | null> {
+    // Function to get the audio blob from a resolved vault path
+    async getAudioBlobFromPath(vaultPath: string): Promise<Blob | null> {
         try {
-            if (!this.validateFilePath(filePath)) {
-                console.log(filePath);
-                throw new Error("Invalid file path detected.");
-            }
-            const arrayBuffer = await this.app.vault.adapter.readBinary(`/Attachements/${filePath}`);
-            return new Blob([arrayBuffer]);
+            const arrayBuffer = await this.app.vault.adapter.readBinary(vaultPath);
+            const mime = this.getMimeFromExtension(vaultPath);
+            return new Blob([arrayBuffer], { type: mime });
         } catch (error) {
             console.error("Error reading audio file:", error);
             return null;
         }
     }
 
-    validateFilePath(filePath: string): boolean {
-        const allowedPath = new RegExp("^[a-zA-Z0-9_ /\\.-]+$", "i");
-        return allowedPath.test(filePath);
+    // Function to get the creation date of the audio file from a resolved vault path
+    async getFileCreationDateFromPath(vaultPath: string): Promise<string> {
+        try {
+            const file = this.app.vault.getAbstractFileByPath(vaultPath) as TFile;
+            if (file) {
+                return new Date(file.stat.ctime).toLocaleString();
+            } else {
+                console.error(`File not found: ${vaultPath}`);
+                return "Unknown date";
+            }
+        } catch (error) {
+            console.error("Error getting file creation date:", error);
+            return "Unknown date";
+        }
     }
 
-    async convertAndCompressAudio(inputBlob: Blob): Promise<Blob> {
-        return new Promise((resolve, reject) => {
-            const vaultPath = "/Users/krzysztofkosman/Obsidian/Private/Tmp";
-            const inputFilePath = `${vaultPath}/input.m4a`;
-            const outputFilePath = `${vaultPath}/output.mp3`;
-
-            // Write the input blob to a file
-            const reader = new FileReader();
-            reader.onload = () => {
-                const buffer = Buffer.from(reader.result as ArrayBuffer);
-                writeFileSync(inputFilePath, buffer);
-
-                // Use ffmpeg to convert and compress the audio file
-                const ffmpegPath = "/Users/krzysztofkosman/Projects/whisper-obsidian-plugin/node_modules/ffmpeg-static/ffmpeg";
-                console.log(`Using ffmpeg binary at: ${ffmpegPath}`);
-                ffmpeg(inputFilePath)
-                    .setFfmpegPath(ffmpegPath)
-                    .audioCodec("libmp3lame")
-                    .audioBitrate("64k")
-                    .format("mp3")
-                    .on("end", () => {
-                        // Read the output file and resolve the promise with the resulting blob
-                        const outputBuffer = readFileSync(outputFilePath);
-                        const outputBlob = new Blob([outputBuffer], { type: "audio/mp3" });
-                        resolve(outputBlob);
-
-                        // Clean up temporary files
-                        try {
-                            fs.unlinkSync(inputFilePath);
-                            fs.unlinkSync(outputFilePath);
-                        } catch (err) {
-                            console.error("Error cleaning up temporary files:", err);
-                        }
-                    })
-                    .on("error", (err: Error) => {
-                        console.error("Error during ffmpeg processing:", err);
-                        reject(err);
-                    })
-                    .save(outputFilePath);
-            };
-            reader.readAsArrayBuffer(inputBlob);
-        });
+    // Try to resolve an audio path from a wiki link value
+    resolveAudioPath(filePath: string, sourcePath: string): string | null {
+        const normalized = filePath.replace(/^\/+/, "");
+        // If the link already has directories, treat it as vault-relative
+        if (normalized.includes("/")) {
+            const exists = this.app.vault.getAbstractFileByPath(normalized);
+            return exists ? normalized : null;
+        }
+        // Resolve using Obsidian link resolver from the source note
+        const dest = this.app.metadataCache.getFirstLinkpathDest(
+            normalized,
+            sourcePath
+        );
+        if (dest) return dest.path;
+        // Fallback to your fixed folder if resolver fails
+        const candidate = `Private/Attachements/${normalized}`;
+        const exists = this.app.vault.getAbstractFileByPath(candidate);
+        return exists ? candidate : null;
     }
+
+    getMimeFromExtension(path: string): string {
+        const ext = (path.split(".").pop() || "").toLowerCase();
+        switch (ext) {
+            case "m4a":
+                return "audio/mp4"; // common for m4a
+            case "mp3":
+                return "audio/mpeg";
+            case "wav":
+                return "audio/wav";
+            case "ogg":
+                return "audio/ogg";
+            case "webm":
+                return "audio/webm";
+            case "aac":
+                return "audio/aac";
+            case "flac":
+                return "audio/flac";
+            default:
+                return "application/octet-stream";
+        }
+    }
+
+
 
     // Function to analyze the transcription using OpenAI GPT model
     async analyzeTranscription(transcription: string): Promise<string | null> {
@@ -331,7 +352,7 @@ export default class Whisper extends Plugin {
             const response = await axios.post(
                 "https://api.openai.com/v1/chat/completions",
                 {
-                    model: "gpt-4o-mini",
+                    model: "gpt-4o",
                     messages: messages,
                     response_format: {
                         type: "text",
@@ -357,4 +378,5 @@ export default class Whisper extends Plugin {
             return null;
         }
     }
+
 }

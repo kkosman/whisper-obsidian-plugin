@@ -1,12 +1,13 @@
 import Whisper from "main";
 import { App, PluginSettingTab, Setting, TFolder } from "obsidian";
 import { SettingsManager } from "./SettingsManager";
+// Network actions are handled outside of the settings tab
 
 export class WhisperSettingsTab extends PluginSettingTab {
-	private plugin: Whisper;
-	private settingsManager: SettingsManager;
-	private createNewFileInput: Setting;
-	private saveAudioFileInput: Setting;
+	plugin: Whisper;
+	settingsManager: SettingsManager;
+	saveAudioFileInput: Setting;
+	createNewFileInput: Setting;
 
 	constructor(app: App, plugin: Whisper) {
 		super(app, plugin);
@@ -29,6 +30,7 @@ export class WhisperSettingsTab extends PluginSettingTab {
 		this.createNewFileToggleSetting();
 		this.createNewFilePathSetting();
 		this.createDebugModeToggleSetting();
+		this.createAuthHeaderSetting();
 	}
 
 	private getUniqueFolders(): TFolder[] {
@@ -75,7 +77,7 @@ export class WhisperSettingsTab extends PluginSettingTab {
 			this.plugin.settings.apiKey,
 			async (value) => {
 				this.plugin.settings.apiKey = value;
-				await this.settingsManager.saveSettings(this.plugin.settings);
+				await this.settingsManager.saveSettings();
 			}
 		);
 	}
@@ -88,7 +90,7 @@ export class WhisperSettingsTab extends PluginSettingTab {
 			this.plugin.settings.apiUrl,
 			async (value) => {
 				this.plugin.settings.apiUrl = value;
-				await this.settingsManager.saveSettings(this.plugin.settings);
+				await this.settingsManager.saveSettings();
 			}
 		);
 	}
@@ -101,7 +103,7 @@ export class WhisperSettingsTab extends PluginSettingTab {
 			this.plugin.settings.model,
 			async (value) => {
 				this.plugin.settings.model = value;
-				await this.settingsManager.saveSettings(this.plugin.settings);
+				await this.settingsManager.saveSettings();
 			}
 		);
 	}
@@ -114,7 +116,7 @@ export class WhisperSettingsTab extends PluginSettingTab {
 			this.plugin.settings.prompt,
 			async (value) => {
 				this.plugin.settings.prompt = value;
-				await this.settingsManager.saveSettings(this.plugin.settings);
+				await this.settingsManager.saveSettings();
 			}
 		);
 	}
@@ -127,7 +129,7 @@ export class WhisperSettingsTab extends PluginSettingTab {
 			this.plugin.settings.language,
 			async (value) => {
 				this.plugin.settings.language = value;
-				await this.settingsManager.saveSettings(this.plugin.settings);
+				await this.settingsManager.saveSettings();
 			}
 		);
 	}
@@ -146,9 +148,7 @@ export class WhisperSettingsTab extends PluginSettingTab {
 						if (!value) {
 							this.plugin.settings.saveAudioFilePath = "";
 						}
-						await this.settingsManager.saveSettings(
-							this.plugin.settings
-						);
+						await this.settingsManager.saveSettings();
 						this.saveAudioFileInput.setDisabled(!value);
 					})
 			);
@@ -166,9 +166,7 @@ export class WhisperSettingsTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.saveAudioFilePath)
 					.onChange(async (value) => {
 						this.plugin.settings.saveAudioFilePath = value;
-						await this.settingsManager.saveSettings(
-							this.plugin.settings
-						);
+						await this.settingsManager.saveSettings();
 					})
 			)
 			.setDisabled(!this.plugin.settings.saveAudioFile);
@@ -190,9 +188,7 @@ export class WhisperSettingsTab extends PluginSettingTab {
 							this.plugin.settings.createNewFileAfterRecordingPath =
 								"";
 						}
-						await this.settingsManager.saveSettings(
-							this.plugin.settings
-						);
+						await this.settingsManager.saveSettings();
 						this.createNewFileInput.setDisabled(!value);
 					});
 			});
@@ -212,9 +208,7 @@ export class WhisperSettingsTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						this.plugin.settings.createNewFileAfterRecordingPath =
 							value;
-						await this.settingsManager.saveSettings(
-							this.plugin.settings
-						);
+						await this.settingsManager.saveSettings();
 					});
 			});
 	}
@@ -230,10 +224,23 @@ export class WhisperSettingsTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.debugMode)
 					.onChange(async (value) => {
 						this.plugin.settings.debugMode = value;
-						await this.settingsManager.saveSettings(
-							this.plugin.settings
-						);
+						await this.settingsManager.saveSettings();
 					});
 			});
+	}
+
+	private createAuthHeaderSetting(): void {
+		new Setting(this.containerEl)
+			.setName("Authorization Header")
+			.setDesc("Authorization header for the transcription API")
+			.addText((text) =>
+				text
+					.setPlaceholder("Basic XYZ12345")
+					.setValue(this.plugin.settings.authHeader)
+					.onChange(async (value) => {
+						this.plugin.settings.authHeader = value;
+						await this.plugin.settingsManager.saveSettings();
+					})
+			);
 	}
 }
